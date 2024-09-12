@@ -2,6 +2,8 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View
 import chess
+import requests
+import sqlite3
 
 # Initialize the bot and chess game
 intents = discord.Intents.default()
@@ -17,6 +19,8 @@ roles = {'white_hand': None, 'white_brain': None, 'black_hand': None, 'black_bra
 users = {}
 piece_choices = {}  # Track user's chosen piece
 pressed_users = set()  # Track users who have pressed a button
+
+DATABASE = 'users.db'
 
 @bot.tree.command(name="brainhand", description="Starts a Brain and Hand Game")
 async def start_game(ctx: discord.Interaction):
@@ -136,10 +140,73 @@ async def move(ctx, move: str):
     else:
         await ctx.send("Only players with 'hand' roles can make a move.")
 
+def create_table():
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            discord_id TEXT PRIMARY KEY,
+            chess_username TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def add_user(discord_id, chess_username):
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute('''
+        INSERT OR REPLACE INTO users (discord_id, chess_username)
+        VALUES (?, ?)
+    ''', (discord_id, chess_username))
+    conn.commit()
+    conn.close()
+
+def get_chess_username(discord_id):
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute('''
+        SELECT chess_username FROM users WHERE discord_id = ?
+    ''', (discord_id,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+@bot.tree.command(name='sync', description='Sync your Chess.com account with Discord')
+async def sync(interaction: discord.Interaction, chess_username: str):
+    # Get the author ID from the interaction context
+    author_id = interaction.user.id
+
+    add_user(author_id, chess_username)
+
+    headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:91.0) Gecko/20100101 Firefox/91.0"
+    }   
+
+    response = requests.get(f"https://api.chess.com/pub/player/{chess_username}/stats", headers=headers)
+
+    if response.status_code == 200:
+        data = response.json()
+
+        # Check if the specific sections exist in the data before accessing them
+        rapid_rating = data.get('chess_rapid', {}).get('last', {}).get('rating', 'N/A')
+        bullet_rating = data.get('chess_bullet', {}).get('last', {}).get('rating', 'N/A')
+        blitz_rating = data.get('chess_blitz', {}).get('last', {}).get('rating', 'N/A')
+
+        await interaction.response.send_message(f'Successfully synced! Here are your ratings:\n'
+                                                f'Rapid: {rapid_rating}\n'
+                                                f'Bullet: {bullet_rating}\n'
+                                                f'Blitz: {blitz_rating}')
+    else:
+        # Log the response content for further debugging
+        print(f"Status Code: {response.status_code}, Content: {response.content}")
+        await interaction.response.send_message('Error retrieving data from Chess.com. Please check your username and try again.')
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name}")
+    create_table()
     await bot.tree.sync()
 
 # Run the bot
-bot.run('token')
+bot.run('')
